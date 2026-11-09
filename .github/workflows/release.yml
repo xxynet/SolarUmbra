@@ -145,8 +145,14 @@ jobs:
             range="$previousTag..$tag"
             comparison="[查看 ${previousTag} → ${tag} 的完整差异](https://github.com/${GITHUB_REPOSITORY}/compare/${previousTag}...${tag})"
           else
-            range="$tag"
-            comparison=""
+            previousRelease="$(git log -1 --format=%H --grep='^chore(release):' "${tag}^")"
+            if [[ -n "$previousRelease" ]]; then
+              range="$previousRelease..$tag"
+              comparison="[查看本次发行的完整差异](https://github.com/${GITHUB_REPOSITORY}/compare/${previousRelease}...${tag})"
+            else
+              range="$tag"
+              comparison=""
+            fi
           fi
           changes="$(git log --no-merges --invert-grep --grep='^chore(release):' --pretty=format:"- %s ([%h](https://github.com/${GITHUB_REPOSITORY}/commit/%H))" "$range")"
           [[ -z "$changes" ]] && changes="- No commit changes detected."
@@ -205,7 +211,20 @@ jobs:
     runs-on: ubuntu-latest
     environment: SnowLuma
     steps:
+      - name: Check optional Docker publishing configuration
+        id: docker
+        env:
+          RELEASE_REPOSITORY: ${{ vars.DOCKER_RELEASE_REPOSITORY }}
+        run: |
+          if [ -z "${RELEASE_REPOSITORY}" ]; then
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Docker publishing is not configured; GitHub Release is complete."
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Trigger Docker.Framework workflow_dispatch
+        if: steps.docker.outputs.enabled == 'true'
         uses: actions/github-script@v8
         env:
           RELEASE_REPOSITORY: ${{ vars.DOCKER_RELEASE_REPOSITORY }}
