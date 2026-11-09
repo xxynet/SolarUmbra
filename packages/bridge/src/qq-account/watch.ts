@@ -47,28 +47,41 @@ export function watchAccountFiles(
         watchers.delete(dbPath);
         const dbDirectory = path.dirname(dbPath);
         let directory = dbDirectory;
+        let nearestDirectory: string | undefined;
 
         for (;;) {
-            const target = path.relative(directory, dbPath).split(path.sep)[0]!;
+            if (directory === nearestDirectory) {
+                return;
+            }
+
+            const candidateDirectory = directory;
+            const target = path.relative(candidateDirectory, dbPath).split(path.sep)[0]!;
 
             try {
-                const watcher = watch(directory, { persistent: false }, (_event, filename) => {
-                    if (
-                        watchers.get(dbPath) !== watcher ||
-                        (filename !== null &&
-                            filename !== target &&
-                            !(directory === dbDirectory && filename === `${target}-wal`))
-                    ) {
-                        return;
-                    }
+                const watcher = watch(
+                    candidateDirectory,
+                    { persistent: false },
+                    (_event, filename) => {
+                        if (
+                            watchers.get(dbPath) !== watcher ||
+                            (filename !== null &&
+                                filename !== target &&
+                                !(
+                                    candidateDirectory === dbDirectory &&
+                                    filename === `${target}-wal`
+                                ))
+                        ) {
+                            return;
+                        }
 
-                    // QQ may create its data directories after process discovery.
-                    if (directory !== dbDirectory) {
-                        observe(dbPath);
-                    }
+                        // QQ may create its data directories after process discovery.
+                        if (candidateDirectory !== dbDirectory) {
+                            observe(dbPath);
+                        }
 
-                    changed();
-                });
+                        changed();
+                    },
+                );
                 watcher.on('error', (error) => {
                     if (watchers.get(dbPath) !== watcher) {
                         return;
@@ -78,8 +91,17 @@ export function watchAccountFiles(
                     watchers.delete(dbPath);
                     log.warn('account watch failed: path=%s err=%s', dbPath, errorMessage(error));
                 });
+                watchers.get(dbPath)?.close();
                 watchers.set(dbPath, watcher);
-                return;
+
+                if (candidateDirectory === dbDirectory) {
+                    return;
+                }
+
+                // A child may have been created between its failed watch attempt and
+                // registering this ancestor. Recheck with the ancestor now observing changes.
+                nearestDirectory = candidateDirectory;
+                directory = dbDirectory;
             } catch (error) {
                 const parent = path.dirname(directory);
 

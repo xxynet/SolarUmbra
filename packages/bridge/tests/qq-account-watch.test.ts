@@ -21,6 +21,10 @@ vi.mock('node:fs', async (importOriginal) => ({
 }));
 
 class TestWatcher extends EventEmitter implements FSWatcher {
+    constructor(readonly directory: string) {
+        super();
+    }
+
     // Keep callbacks reachable after close to exercise queued, stale events.
     close = vi.fn();
     ref() {
@@ -45,7 +49,7 @@ beforeEach(() => {
             throw Object.assign(new Error('directory missing'), { code: 'ENOENT' });
         }
 
-        const watcher = new TestWatcher();
+        const watcher = new TestWatcher(directory);
         watcher.on('change', listener);
         watchers.push(watcher);
         return watcher;
@@ -137,16 +141,43 @@ describe('account file changes', () => {
             const previous = watchers.at(-1)!;
             previous.emit('change', 'rename', segment);
             expect(previous.close).toHaveBeenCalledOnce();
-            expect(files.watch).toHaveBeenLastCalledWith(
-                directory,
-                { persistent: false },
-                expect.any(Function),
-            );
+            expect(watchers.at(-1)?.directory).toBe(directory);
         }
 
         vi.advanceTimersByTime(250);
         expect(changed).toHaveBeenCalledOnce();
         watchers.at(-1)!.emit('change', 'change', 'login.db-wal');
+        vi.advanceTimersByTime(250);
+        expect(changed).toHaveBeenCalledTimes(2);
+    });
+
+    it('rechecks descendants created before an ancestor watch is registered', () => {
+        const dbDirectory = path.join(root, 'QQ', 'global', 'nt_db');
+        const { changed } = subscribe([path.join(dbDirectory, 'login.db')]);
+        const ancestor = watchers[0]!;
+        const attach = files.watch.getMockImplementation()!;
+        let databaseWatcher: TestWatcher | undefined;
+
+        directories.add(path.join(root, 'QQ'));
+        files.watch.mockImplementation((directory, options, listener) => {
+            const watcher = attach(directory, options, listener);
+
+            if (directory === path.join(root, 'QQ')) {
+                // mkdir can finish after the failed descendant attempts but before watch returns.
+                directories.add(dbDirectory);
+            }
+
+            if (directory === dbDirectory) {
+                databaseWatcher = watchers.at(-1);
+            }
+
+            return watcher;
+        });
+        ancestor.emit('change', 'rename', 'QQ');
+        expect(databaseWatcher).toBeDefined();
+        vi.advanceTimersByTime(250);
+        expect(changed).toHaveBeenCalledOnce();
+        databaseWatcher!.emit('change', 'change', 'login.db-wal');
         vi.advanceTimersByTime(250);
         expect(changed).toHaveBeenCalledTimes(2);
     });
@@ -160,11 +191,7 @@ describe('account file changes', () => {
             directories.add(dbDirectory);
             ancestor.emit('change', 'rename', filename);
             expect(ancestor.close).toHaveBeenCalledOnce();
-            expect(files.watch).toHaveBeenLastCalledWith(
-                dbDirectory,
-                { persistent: false },
-                expect.any(Function),
-            );
+            expect(watchers.at(-1)?.directory).toBe(dbDirectory);
             const attempts = files.watch.mock.calls.length;
             vi.advanceTimersByTime(250);
             expect(changed).toHaveBeenCalledOnce();
